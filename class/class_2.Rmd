@@ -1,0 +1,133 @@
+---
+title: 'Class 2: Getting Used to Prediction'
+output: pdf_document
+date: "2025-08-27"
+---
+
+```{r, message=FALSE, warning=FALSE}
+#--------------------------------------------------------
+# POLSCI 797
+#
+# Intro to prediction
+# Examples from marginaleffects
+#--------------------------------------------------------
+# you may need to install.packages("marginaleffects")
+library(marginaleffects)
+library(tidyverse)
+library(texreg)
+dat <- read.csv("https://marginaleffects.com/data/impartiality.csv")
+```
+
+```{r}
+head(dat)
+```
+
+```{r}
+# Make a "nonsense" column
+# Why? We should NOT expect this to have relationship
+# with variables of interest. We'll check later.
+
+dat$nchar <- nchar(dat$country)
+quantile(dat$nchar)
+```
+
+```{r}
+# Fit example model: different from reading, same data
+#--------------------------------------------------------
+fit_lm <- lm(equal ~ impartial * democracy * nchar + continent,
+             data = dat)
+
+summary(fit_lm)
+
+texreg::screenreg(fit_lm)
+```
+
+# What good is a prediction?
+
+First, how do we recreate OLS coefficients given proof today?
+
+Hints:
+
+- Function `solve()` finds the inverse of a matrix.
+- Function `t()` finds the transpose of a matrix.
+
+```{r}
+# 0. Predictions on ORIGINAL data in matrix form
+
+```
+
+You can use the predict() function to get predictions for given values of X:
+
+```{r}
+
+```
+
+# Example: finding the "average" prediction for our data
+
+It's more interesting than you might think!
+
+You can interpret this in at least two ways:
+
+Are these in general the same?
+
+```{r}
+
+```
+
+Making predictions in `marginaleffects` is easy:
+
+```{r}
+
+```
+
+Can make comparisons directly:
+
+```{r}
+
+```
+
+A lot more sophisticated stuff you can do in the package: hypothesis tests, predicted changes in variables, etc.
+
+```{r}
+
+```
+
+Predictions can also help you understand your own model better:
+
+```{r}
+#--------------------------------------------------------
+# 2. Helps you understand your own model better
+
+```
+
+# What are the dangers of in-sample prediction?
+
+```{r}
+#--------------------------------------------------------
+# The limits of in-sample predictability
+
+fit_lm$model[5,]
+dat[6,]
+
+predict(fit_lm, newdata = data.frame(impartial = 1,
+                                     democracy = "Democracy",
+                                     continent = "Africa",
+                                     nchar = 12))
+
+# An extremely "flexible" model
+y <- dat$equal
+x <- dat$nchar
+n <- length(x)
+
+fit_poly <- lm(y ~ poly(x, n-1, raw = TRUE))
+fit_lm <- lm(y ~ x, data = dat)
+
+plot(dat$nchar, dat$equal)
+abline(reg = fit_lm, col = "orange")
+curve(
+  predict(fit_poly, newdata = data.frame(x = x)),
+  add = TRUE, col = "blue", lwd = 2
+)
+
+#--------------------------------------------------------
+```
