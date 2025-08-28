@@ -92,34 +92,19 @@ A lot more sophisticated stuff you can do in the package: hypothesis tests, pred
 
 ```
 
-Predictions can also help you understand your own model better:
+# What are the dangers of prediction?
 
 ```{r}
 #--------------------------------------------------------
-# 2. Helps you understand your own model better
-
-```
-
-# What are the dangers of in-sample prediction?
-
-```{r}
-#--------------------------------------------------------
-# The limits of in-sample predictability
-
-fit_lm$model[5,]
-dat[6,]
-
-predict(fit_lm, newdata = data.frame(impartial = 1,
-                                     democracy = "Democracy",
-                                     continent = "Africa",
-                                     nchar = 12))
-
-# An extremely "flexible" model
+# The limits of in-sample predictability, example:
+# Simple OLS vs. an extremely "flexible" model
 y <- dat$equal
 x <- dat$nchar
 n <- length(x)
 
+# Very flexible model with "polynomial" fit (more soon!)
 fit_poly <- lm(y ~ poly(x, n-1, raw = TRUE))
+# Simple OLS
 fit_lm <- lm(y ~ x, data = dat)
 
 plot(dat$nchar, dat$equal)
@@ -128,6 +113,4 @@ curve(
   predict(fit_poly, newdata = data.frame(x = x)),
   add = TRUE, col = "blue", lwd = 2
 )
-
-#--------------------------------------------------------
 ```
