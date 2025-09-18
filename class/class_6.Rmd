@@ -31,7 +31,7 @@ df <- df %>% select(State, Name,
               PCT_25Plus_LessThanDiploma,
               PCT_25Plus_Bachelors, Median_Income, Median_Housing_Age,
               POV_PCT, month_moisture,
-              Full_Time_Equivalent_Employees, merged_FOG,
+              Full_Time_Equivalent_Employees, merged_FOG, # GW_SW_CODE,
               demshare_pres_2016) %>% 
   left_join(tibble(State = state.abb,
                    state.region), by = "State")
@@ -48,6 +48,10 @@ First, we define test train split:
 #--------------------------------------------------------------
 # 1. Define train/test split
 #--------------------------------------------------------------
+set.seed(734)
+splits <- initial_split(df, prop = 0.8, strata = log_waterexp)
+df_train <- training(splits)
+df_test  <- testing(splits)
 ```
 
 `initial_validation_split(df)` is also an option. But, notice cross-validation is doing this internally as it is not training on the full training set.
@@ -91,13 +95,39 @@ Next, we define the models we want to evaluate:
 #--------------------------------------------------------------
 # 3. Define models
 #--------------------------------------------------------------
+# OLS
+ols_def <- linear_reg() %>%
+  set_engine("lm")
 
+# Ridge
+ridge_def <- linear_reg(
+  penalty = tune(),
+  mixture = 0   # just like glmnet, mixture = 0 -> ridge
+) %>% 
+  set_engine("glmnet")
+
+# LASSO regression
+lasso_def <- linear_reg(
+  penalty = tune(),
+  mixture = 1   # just like glmnet, mixture = 0 -> lasso
+) %>% 
+  set_engine("glmnet")
+
+#--------------------------------------------------------------
+# Make list of model definitions
+model_defs <- list(
+  ols   = ols_def,
+  ridge = ridge_def,
+  lasso = lasso_def
+)
+#--------------------------------------------------------------
 ```
 
 `tidymodels` automates the cross validation process:
 
 ```{r}
-
+set.seed(734)
+cv_folds <- vfold_cv(df_train, v = 3)
 ```
 
 In `tidymodels`, models are a:
@@ -107,28 +137,80 @@ In `tidymodels`, models are a:
 3. `recipe`: pre-processing steps to automate across all models
 
 ```{r}
+#--------------------------------------------------------------
+# Could do this separately
+ols_wf   <- workflow() %>% add_model(ols_def)   %>% add_recipe(rec)
+ridge_wf <- workflow() %>% add_model(ridge_def) %>% add_recipe(rec)
+lasso_wf <- workflow() %>% add_model(lasso_def) %>% add_recipe(rec)
+#--------------------------------------------------------------
 
+#--------------------------------------------------------------
+# or all at once with custom function
+workflows <- map(model_defs, ~ workflow() %>%
+                   add_recipe(rec) %>%
+                   add_model(.x))
+#--------------------------------------------------------------
 ```
 
 Now, we can use our cross-validation sets to tune the hyperparameters on each model.
 
 ```{r}
+# Define grid of possible tuning parameters to test
+lambda_grid <- grid_regular(
+  penalty(range = c(-5, 5), trans = log10_trans()), 
+  levels = 20
+)
+
+ridge_res <- tune_grid(
+  ridge_wf,
+  resamples = cv_folds,
+  grid = lambda_grid,
+  metrics = metric_set(rmse, mae)
+)
+
+lasso_res <- tune_grid(
+  lasso_wf,
+  resamples = cv_folds,
+  grid = lambda_grid,
+  metrics = metric_set(rmse, mae)
+)
 
 ```
 
 Now we can pick the 'best' models according to our loss function:
 
 ```{r}
+# Pick best ridge / lasso (minimum RMSE)
+ridge_best <- select_best(ridge_res, metric = "rmse")
+lasso_best <- select_best(lasso_res, metric = "rmse")
 
+ridge_final <- finalize_workflow(ridge_wf, ridge_best) %>%
+  fit(data = df_train)
+lasso_final <- finalize_workflow(lasso_wf, lasso_best) %>%
+  fit(data = df_train)
+
+# Want the single model object?
+best_lambda <- lasso_best$penalty
+
+lasso_fit <- lasso_final %>% extract_fit_parsnip()
+ridge_fit <- ridge_final %>% extract_fit_parsnip()
+
+broom::tidy(lasso_fit)
+broom::tidy(ridge_fit)
+
+# can do all the same stuff as before
+predict(lasso_final, new_data = df_test)
 ```
 
 ```{r}
-
+# OLS has no hyperparameters, can fit directly
+ols_fit <- fit(ols_wf, data = df_train)
 ```
 
 Now, we can compute metrics for our final model:
 
 ```{r}
+
 ```
 
 Let's write a map to calculate our own prediction statistics:
