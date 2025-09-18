@@ -1,0 +1,168 @@
+---
+title: 'POLSCI797: Class #6'
+output: pdf_document
+date: "2025-09-18"
+---
+
+We'll explore the `tidymodels` package to fit and evaluate several models simultaenously.
+
+For data, we'll use the [Municipal Drinking Water Database](https://dataverse.harvard.edu/dataset.xhtml?persistentId=doi:10.7910/DVN/DFB6NG) by Hughes et al. (2023).
+
+```{r setup, include=FALSE}
+#--------------------------------------------------------------
+# Example cleaning
+#--------------------------------------------------------------
+library(tidymodels)
+library(tidyverse)
+
+df <- read_csv("MDWD.csv")
+
+df <- df %>%
+  arrange(PWSID, YEAR) %>%
+  fill(everything(), .direction = "down")
+
+df <- df %>% filter(YEAR == 2016)
+
+df <- df %>% select(State, Name,
+              FIPS_County, Population, Total_Revenue, Total_Expenditure,
+              Total_Taxes, Water_Utility_Revenue,
+              Water_Util_Total_Exp, Total_Rev_Own_Sources,
+              TOT_POP, PCT_White, PCT_Black, PCT_Hispanic,
+              PCT_25Plus_LessThanDiploma,
+              PCT_25Plus_Bachelors, Median_Income, Median_Housing_Age,
+              POV_PCT, month_moisture,
+              Full_Time_Equivalent_Employees, merged_FOG,
+              demshare_pres_2016) %>% 
+  left_join(tibble(State = state.abb,
+                   state.region), by = "State")
+
+df$log_waterexp <- log(df$Water_Util_Total_Exp + 1)
+df$Water_Util_Total_Exp <- NULL
+
+um_colors <- c("#FFCB05", "#00274C")
+```
+
+First, we define test train split:
+
+```{r}
+#--------------------------------------------------------------
+# 1. Define train/test split
+#--------------------------------------------------------------
+```
+
+`initial_validation_split(df)` is also an option. But, notice cross-validation is doing this internally as it is not training on the full training set.
+
+Model **recipes**: automate all the pre-processing for each model.
+
+```{r}
+#--------------------------------------------------------------
+# 2. Define pre-processing recipe
+#--------------------------------------------------------------
+rec <- recipe(log_waterexp ~ ., data = df_train) %>%
+  
+  # 1. Remove identifier variables
+  step_rm(Name, State) %>%
+  
+  # 2. Avoid categorical variables with "new" values in test data
+  step_novel(all_nominal_predictors()) %>%
+  
+  # 3. Mean imputation for missing numeric values
+  step_impute_mean(all_numeric_predictors()) %>%
+  
+  # 4. Mode imputation for missing categorical variables
+  step_impute_mode(all_nominal_predictors()) %>%
+  
+  # 5. Create dummy variables for categorical predictors
+  step_dummy(all_nominal_predictors()) %>% 
+
+  # 6. Remove zero-variance predictors (constant columns)
+  step_zv(all_predictors()) %>% 
+
+  # 7. Normalize numeric predictors (center and scale)
+  step_normalize(all_numeric_predictors()) %>% 
+  
+  # 8. Remove near-zero variance predictors 
+  step_nzv(all_predictors())
+```
+
+Next, we define the models we want to evaluate:
+
+```{r}
+#--------------------------------------------------------------
+# 3. Define models
+#--------------------------------------------------------------
+
+```
+
+`tidymodels` automates the cross validation process:
+
+```{r}
+
+```
+
+In `tidymodels`, models are a:
+
+1. `workflow`: empty shell to define process.
+2. `model`: functional definition, engine, etc. (lots of [options](https://www.tidymodels.org/find/parsnip/))
+3. `recipe`: pre-processing steps to automate across all models
+
+```{r}
+
+```
+
+Now, we can use our cross-validation sets to tune the hyperparameters on each model.
+
+```{r}
+
+```
+
+Now we can pick the 'best' models according to our loss function:
+
+```{r}
+
+```
+
+```{r}
+
+```
+
+Now, we can compute metrics for our final model:
+
+```{r}
+```
+
+Let's write a map to calculate our own prediction statistics:
+
+```{r}
+
+```
+
+Plots! First, check true answer vs. predictions:
+
+```{r}
+
+```
+
+Now, check prediction vs. residual:
+
+```{r}
+
+```
+
+Now, let's investigate error rate across hyperparameter:
+
+```{r}
+
+```
+
+```{r}
+
+```
+
+QQ-plots of predictions:
+
+```{r}
+
+```
+
+Systematic biases! This is bad. We will explore how to deal with this next time.
