@@ -1,0 +1,339 @@
+---
+title: 'POLSCI797: Class #6'
+output: pdf_document
+date: "2025-09-18"
+---
+
+We'll explore the `tidymodels` package to fit and evaluate several models simultaenously.
+
+For data, we'll use the [Municipal Drinking Water Database](https://dataverse.harvard.edu/dataset.xhtml?persistentId=doi:10.7910/DVN/DFB6NG) by Hughes et al. (2023).
+
+```{r setup, include=FALSE}
+#--------------------------------------------------------------
+# Example cleaning
+#--------------------------------------------------------------
+library(tidymodels)
+library(tidyverse)
+
+df <- read_csv("MDWD.csv")
+
+df <- df %>%
+  arrange(PWSID, YEAR) %>%
+  fill(everything(), .direction = "down")
+
+df <- df %>% filter(YEAR == 2016)
+
+df <- df %>% select(State, Name,
+              FIPS_County, Population, Total_Revenue, Total_Expenditure,
+              Total_Taxes, Water_Utility_Revenue,
+              Water_Util_Total_Exp, Total_Rev_Own_Sources,
+              TOT_POP, PCT_White, PCT_Black, PCT_Hispanic,
+              PCT_25Plus_LessThanDiploma,
+              PCT_25Plus_Bachelors, Median_Income, Median_Housing_Age,
+              POV_PCT, month_moisture,
+              Full_Time_Equivalent_Employees, merged_FOG, # GW_SW_CODE,
+              demshare_pres_2016) %>% 
+  left_join(tibble(State = state.abb,
+                   state.region), by = "State")
+
+df$log_waterexp <- log(df$Water_Util_Total_Exp + 1)
+df$Water_Util_Total_Exp <- NULL
+
+um_colors <- c("#FFCB05", "#00274C")
+```
+
+First, we define test train split:
+
+```{r}
+#--------------------------------------------------------------
+# 1. Define train/test split
+#--------------------------------------------------------------
+set.seed(734)
+splits <- initial_split(df, prop = 0.8, strata = log_waterexp)
+df_train <- training(splits)
+df_test  <- testing(splits)
+```
+
+`initial_validation_split(df)` is also an option. But, notice cross-validation is doing this internally as it is not training on the full training set.
+
+Model **recipes**: automate all the pre-processing for each model.
+
+```{r}
+#--------------------------------------------------------------
+# 2. Define pre-processing recipe
+#--------------------------------------------------------------
+rec <- recipe(log_waterexp ~ ., data = df_train) %>%
+  
+  # 1. Remove identifier variables
+  step_rm(Name, State) %>%
+  
+  # 2. Avoid categorical variables with "new" values in test data
+  step_novel(all_nominal_predictors()) %>%
+  
+  # 3. Mean imputation for missing numeric values
+  step_impute_mean(all_numeric_predictors()) %>%
+  
+  # 4. Mode imputation for missing categorical variables
+  step_impute_mode(all_nominal_predictors()) %>%
+  
+  # 5. Create dummy variables for categorical predictors
+  step_dummy(all_nominal_predictors()) %>% 
+
+  # 6. Remove zero-variance predictors (constant columns)
+  step_zv(all_predictors()) %>% 
+
+  # 7. Normalize numeric predictors (center and scale)
+  step_normalize(all_numeric_predictors()) %>% 
+  
+  # 8. Remove near-zero variance predictors 
+  step_nzv(all_predictors())
+```
+
+Next, we define the models we want to evaluate:
+
+```{r}
+#--------------------------------------------------------------
+# 3. Define models
+#--------------------------------------------------------------
+# OLS
+ols_def <- linear_reg() %>%
+  set_engine("lm")
+
+# Ridge
+ridge_def <- linear_reg(
+  penalty = tune(),
+  mixture = 0   # just like glmnet, mixture = 0 -> ridge
+) %>% 
+  set_engine("glmnet")
+
+# LASSO regression
+lasso_def <- linear_reg(
+  penalty = tune(),
+  mixture = 1   # just like glmnet, mixture = 0 -> lasso
+) %>% 
+  set_engine("glmnet")
+
+#--------------------------------------------------------------
+# Make list of model definitions
+model_defs <- list(
+  ols   = ols_def,
+  ridge = ridge_def,
+  lasso = lasso_def
+)
+#--------------------------------------------------------------
+```
+
+`tidymodels` automates the cross validation process:
+
+```{r}
+set.seed(734)
+cv_folds <- vfold_cv(df_train, v = 3)
+```
+
+In `tidymodels`, models are a:
+
+1. `workflow`: empty shell to define process.
+2. `model`: functional definition, engine, etc. (lots of [options](https://www.tidymodels.org/find/parsnip/))
+3. `recipe`: pre-processing steps to automate across all models
+
+```{r}
+#--------------------------------------------------------------
+# Could do this separately
+ols_wf   <- workflow() %>% add_model(ols_def)   %>% add_recipe(rec)
+ridge_wf <- workflow() %>% add_model(ridge_def) %>% add_recipe(rec)
+lasso_wf <- workflow() %>% add_model(lasso_def) %>% add_recipe(rec)
+#--------------------------------------------------------------
+
+#--------------------------------------------------------------
+# or all at once with custom function
+workflows <- map(model_defs, ~ workflow() %>%
+                   add_recipe(rec) %>%
+                   add_model(.x))
+#--------------------------------------------------------------
+```
+
+Now, we can use our cross-validation sets to tune the hyperparameters on each model.
+
+```{r}
+# Define grid of possible tuning parameters to test
+lambda_grid <- grid_regular(
+  penalty(range = c(-5, 5), trans = log10_trans()), 
+  levels = 20
+)
+
+ridge_res <- tune_grid(
+  ridge_wf,
+  resamples = cv_folds,
+  grid = lambda_grid,
+  metrics = metric_set(rmse, mae)
+)
+
+lasso_res <- tune_grid(
+  lasso_wf,
+  resamples = cv_folds,
+  grid = lambda_grid,
+  metrics = metric_set(rmse, mae)
+)
+
+```
+
+Now we can pick the 'best' models according to our loss function:
+
+```{r}
+# OLS has no hyperparameters
+ols_fit <- fit(ols_wf, data = df_train)
+```
+
+```{r}
+# Pick best ridge / lasso (minimum RMSE)
+ridge_best <- select_best(ridge_res, metric = "rmse")
+lasso_best <- select_best(lasso_res, metric = "rmse")
+
+ridge_final <- finalize_workflow(ridge_wf, ridge_best) %>%
+  fit(data = df_train)
+lasso_final <- finalize_workflow(lasso_wf, lasso_best) %>%
+  fit(data = df_train)
+
+# Want the single model object?
+best_lambda <- lasso_best$penalty
+
+lasso_fit <- lasso_final %>% extract_fit_parsnip()
+ridge_fit <- ridge_final %>% extract_fit_parsnip()
+
+broom::tidy(lasso_fit)
+broom::tidy(ridge_fit)
+
+# can do all the same stuff as before
+predict(lasso_final, new_data = df_test)
+```
+
+Now, we can compute metrics for our final model:
+
+```{r}
+#--------------------------------------------------------------
+# again, can do separately:
+predict(lasso_final, new_data = df_test)
+#--------------------------------------------------------------
+# Or can automate:
+final_models <- list(
+  OLS   = ols_fit,
+  Ridge = ridge_final,
+  LASSO = lasso_final
+)
+
+# Compute metrics for all models in one go
+metrics_list <- map(final_models, ~ predict(.x, df_test) %>%
+                      bind_cols(df_test) %>%
+                      metrics(truth = log_waterexp, estimate = .pred))
+
+bind_rows(metrics_list, .id = "name")
+
+bind_rows(metrics_list, .id = "name") %>% 
+  filter(.metric == "rmse")
+
+```
+
+Let's write a map to calculate our own prediction statistics:
+
+```{r}
+pred_df <- map(final_models, ~ {
+    predict(.x, df_test) %>%
+        mutate(
+            log_waterexp = df_test$log_waterexp,
+            residual = log_waterexp - .pred
+        )
+}) %>%
+    bind_rows(.id = "model")
+```
+
+Plots! First, check true answer vs. predictions:
+
+```{r}
+ggplot(pred_df, aes(x = log_waterexp,
+                    y = .pred,
+                    color = model)) +
+  geom_point(alpha = 0.6) +
+  geom_abline(intercept = 0, slope = 1,
+              linetype = "dashed", color = "black") +
+  labs(title = "Predicted vs Observed (Log Water Expense)",
+       x = "Observed log(Water Utilization Exp)",
+       y = "Predicted log(Water Utilization Exp)") +
+  theme_minimal() + 
+  facet_wrap(~model)
+```
+
+Now, check prediction vs. residual:
+
+```{r}
+ggplot(pred_df, aes(x = .pred, y = residual, color = model)) +
+  geom_point(alpha = 0.6) +
+  geom_hline(yintercept = 0, linetype = "dashed") +
+  labs(title = "Residuals vs Predicted Values",
+       x = "Predicted log(Water Utilization Exp)",
+       y = "Residuals") +
+  theme_minimal() +
+  facet_wrap(~model)
+```
+
+Now, let's investigate error rate across hyperparameter:
+
+```{r}
+# collect_metrics() will also give you results
+ridge_tune <- ridge_res %>% collect_metrics() %>% mutate(model = "Ridge")
+lasso_tune <- lasso_res %>% collect_metrics() %>% mutate(model = "LASSO")
+
+tune_df <- bind_rows(ridge_tune, lasso_tune) %>%
+  filter(.metric == "rmse")  # focus on RMSE
+```
+
+```{r}
+ridge_best_lambda <- select_best(ridge_res, metric = "rmse")$penalty
+lasso_best_lambda <- select_best(lasso_res, metric = "rmse")$penalty
+
+best_lambdas <- tibble(
+  model = c("Ridge", "LASSO"),
+  best_lambda = c(ridge_best_lambda, lasso_best_lambda)
+)
+
+ggplot(tune_df, aes(x = penalty, y = mean, color = model)) +
+  geom_line(size = 1.2) +
+  geom_ribbon(aes(ymin = mean - std_err,
+                  ymax = mean + std_err, fill = model),
+              alpha = 0.2, color = NA) +
+  geom_vline(data = best_lambdas,
+             aes(xintercept = best_lambda, color = model),
+             linetype = "dashed") +
+  scale_x_log10() +
+  scale_color_manual(values = um_colors) +
+  scale_fill_manual(values = um_colors) +
+  labs(title = "Model RMSE across lambda values",
+       x = expression(lambda),
+       y = "Mean RMSE (CV)") +
+  theme_minimal() +
+  theme(legend.position = "top") 
+```
+
+QQ-plots of predictions:
+
+```{r}
+pred_df %>%
+  ggplot(aes(sample = residual)) +
+  stat_qq() +
+  stat_qq_line() +
+  facet_wrap(~model) +
+  labs(title = "Q-Q Plot of Residuals",
+       subtitle = "Checking normality assumption")
+
+# Is this driven by zeros?
+pred_df %>%
+  mutate(is_0 = ifelse(log_waterexp == 0, "ZERO", "NONZERO")) %>% 
+  ggplot(aes(sample = residual,
+             color = is_0, group = is_0)) +
+  stat_qq() +
+  stat_qq_line() +
+  facet_wrap(~model) +
+  labs(title = "Q-Q Plot of Residuals",
+       subtitle = "Checking normality assumption")
+```
+
+Systematic biases! This is bad. We will explore how to deal with this next time.

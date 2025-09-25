@@ -1,0 +1,299 @@
+---
+title: 'Class 2: Getting Used to Prediction'
+output: pdf_document
+date: "2025-08-27"
+---
+
+```{r, message=FALSE, warning=FALSE}
+#--------------------------------------------------------
+# POLSCI 797
+#
+# Intro to prediction
+# Examples from marginaleffects
+#--------------------------------------------------------
+# you may need to run:
+  # install.packages("marginaleffects")
+  # install.packages("texreg")
+library(marginaleffects)
+library(tidyverse)
+library(texreg)
+dat <- read.csv("https://marginaleffects.com/data/impartiality.csv")
+dat$X <- NULL
+
+# Make a "nonsense" column
+# Why? We should NOT expect this to have relationship
+# with variables of interest. We'll check later.
+
+dat$nchar <- as.numeric(nchar(dat$country))
+quantile(dat$nchar)
+```
+
+# Warmup questions
+
+1.  $X$ is an $n \times (p+1)$ matrix of covariates with an intercept column. $\beta$ is a $(p + 1) \times 1$ vector, and $y$ is an $n \times 1$ vector. What are the dimensions of $(X\beta)^Ty$?
+
+2.  $A$ is a two (row) by three (column) matrix. The second row is equal to 2 times the first row. Write this matrix $A$, and write $A^T$. How would you describe the relationship between the columns in $A^T$?
+
+------------------------------------------------------------------------
+
+# Predictions for Social Science
+
+Rothstein and Teorell (2008) paper from `marginaleffects` vignette is described as arguing: ``a critical component of good governance in a country is the impartiality of its government institutions, or the degree to which state power is exercised according to written laws rather than personal connections or biases."  The variables they included:
+
+- `impartial`: A binary indicator equal to 1 if a country's public officials are impartial in the performance of their duties.
+- `equal`: A continuous scale from 0 to 100 where higher values indicate that resources like public goods and welfare policies are distributed more equally across society.
+- `democracy`: A binary indicator equal to 1 when a country is a democracy.
+- `continent`: The continent on which a country is located.
+
+```{r}
+# Fit example model: different from reading, same data
+#--------------------------------------------------------
+fit_lm <- lm(equal ~ impartial * democracy * nchar + continent,
+             data = dat)
+
+summary(fit_lm)
+
+texreg::screenreg(fit_lm)
+```
+
+**Question**: how would you interpret the coefficient on `impartial`?
+
+Key: it depends on the values of the other variables! These can be very difficult to manage when you're handling multiple other values manually. We'll discuss how `marginaleffects` is a good alternative for this soon.
+
+**Question**: How do we recreate OLS coefficients given proof?
+
+Hints:
+
+- Function `solve()` finds the inverse of a matrix.
+- Function `t()` finds the transpose of a matrix.
+- Matrix multiplication is done with `%*%`, not just `*`.
+
+```{r}
+# 0. Predictions on ORIGINAL data
+
+y <- as.matrix(fit_lm$model[,"equal"])
+x <- model.matrix(fit_lm)
+
+round(solve(t(x)%*%x)%*%t(x)%*%y, digits=2)
+```
+
+# What good is a prediction?
+
+You can use the `predict()` function to get predictions for given values of X:
+
+```{r}
+predict(fit_lm, newdata = dat)[1:5]
+
+(x %*% solve(t(x)%*%x)%*%t(x)%*%y)[1:5,]
+```
+
+But, `marginaleffects` package offers a lot more too!
+
+```{r}
+# You can do exact same thing with marginaleffects package
+marginaleffects::predictions(fit_lm, newdata = dat)[1:5,]
+
+# Very nice because you can predict any value you want!
+predictions(fit_lm, newdata = data.frame(country = "Ghana",
+                                         continent = "Africa",
+                                         impartial = 0,
+                                         democracy = "Democracy",
+                                         nchar = 5))
+
+predictions(fit_lm, newdata = data.frame(country = "Ghana",
+                                         continent = "Africa",
+                                         impartial = 1,
+                                         democracy = "Democracy",
+                                         nchar = 5))
+```
+
+# Example: finding the "average" prediction for our data
+
+When writing, you often want to present predicted values for "example" cases in your data.
+
+For example: "the model predicts that, on average, democratic countries have an outcome of XX." 
+
+```{r}
+avg_predictions(model = fit_lm, newdata = dat,
+                variables = "democracy")
+
+# What is this actually doing?
+predictions(model = fit_lm, newdata = dat %>% mutate(democracy = "Democracy")) %>% 
+  pull(estimate) %>% mean()
+
+predictions(model = fit_lm, newdata = dat %>% mutate(democracy = "Autocracy")) %>% 
+  pull(estimate) %>% mean()
+
+# Similar predictions with other variables
+avg_predictions(model = fit_lm, newdata = "mean",
+                variables = "democracy")
+
+avg_predictions(model = fit_lm,
+                variables = "continent")
+
+avg_predictions(model = fit_lm, newdata = "mean",
+                variables = "continent")
+
+# Why is this not exactly equal to the raw means?
+tapply(dat$equal, dat$continent, mean)
+```
+
+Predictions are an extremely powerful tool, but you should be careful to understand exactly what you are predicting.
+
+**Often, the most important thing is to always remember what values the other predictors are being held at!**
+
+**Question**: what does an "average" case mean? **Hint**: you can interpret this in at least two ways:
+
+1. Take prediction of an "average" unit: e.g. average over all covariates, then predict.
+2. Take prediction for all units, then average.
+
+Are these in general the same? Show whether or not they are using this data as an example.
+
+```{r}
+#--------------------------------------------------------
+# Predicting an "AVERAGE" case
+
+# 1. One option: predict at "mean" level for each variable.
+# Continuous variables: take mean
+# Discrete variables: take most common value
+# In marginaleffects: create one row "grid" from these values.
+
+avg_imp <- mean(dat$impartial)
+avg_nchar <- mean(dat$nchar)
+table(dat$democracy)
+sort(table(dat$continent), decreasing = TRUE)
+
+predict(fit_lm, newdata = data.frame(impartial = mean(dat$impartial),
+                                     democracy = "Democracy",
+                                     continent = "Africa",
+                                     nchar     = mean(dat$nchar)))
+
+# You can get the exact same thing in marginaleffects with "mean"
+predictions(fit_lm, newdata = "mean")
+
+predictions(fit_lm, newdata = data.frame(impartial = mean(dat$impartial),
+                                         democracy = "Democracy",
+                                         continent = "Africa",
+                                         nchar     = mean(dat$nchar)))
+
+# 2. Second option: predict outcome for all observations,
+# then take the average. This is different!
+mean(predict(fit_lm, newdata = dat))
+```
+You can plot these too:
+
+```{r}
+#--------------------------------------------------------
+# Calculate and plot average predictions by group
+avg_predictions(fit_lm, by = c("democracy", "continent"))
+plot_predictions(fit_lm, by = c("democracy", "continent"))
+#--------------------------------------------------------
+# All variables whose values are not specified explicitly are
+# held at their mean or mode (or rounded mean for integers).
+plot_predictions(fit_lm, condition = c("continent"))
+plot_predictions(fit_lm, condition = c("nchar", "democracy"))
+plot_predictions(fit_lm, condition = c("nchar", "democracy", "continent"))
+```
+And, these are `ggplot()` objects so you can easily customize visualization:
+
+```{r}
+plot_predictions(fit_lm, by = c("democracy", "continent")) +
+  theme_bw()
+plot_predictions(fit_lm, condition = c("nchar", "democracy")) + 
+  theme(axis.title = element_text(face = "bold"))
+```
+
+A lot more sophisticated stuff you can do in the package: hypothesis tests, predicted changes in variables, etc.
+
+You may want to *contrast* predictions between cases, such as democracies vs. autocracies. Can make comparisons directly:
+
+```{r}
+# conditions uses a grid
+# do "impartial" govts. distribute resources more equally than non-impartial?
+avg_comparisons(fit_lm, variables = "impartial")
+
+# what is this actually doing?
+comparisons(fit_lm, variables = list("impartial"=0)) %>% pull(estimate) %>% mean()
+
+#----------------------------------------------
+# calculate manually
+dat_imp_0 <- transform(dat, impartial = 0)
+dat_imp_1 <- transform(dat, impartial = 1)
+
+pred_0 <- predict(fit_lm, newdata = dat_imp_0, type = "response")
+pred_1 <- predict(fit_lm, newdata = dat_imp_1, type = "response")
+
+mean(pred_1 - pred_0)
+```
+
+# Predictions can also help you understand your own model better
+
+**Question**: If Democracies have much higher values of `equal` on average, why is it not significant in the model?
+
+```{r}
+#--------------------------------------------------------
+# 2. Helps you understand your own model better
+# If means are so different, why isn't Democracy variable significant?
+tapply(dat$equal, dat$democracy, mean)
+
+# Democracy looks large difference in raw data
+avg_predictions(fit_lm, by = "democracy")
+
+# How does the predicted equality of resources change between
+# an autocracy or a democracy?
+comparisons(fit_lm, variables = "democracy") %>%
+  pull(estimate) %>% mean()
+
+# Why isn't it significant?
+cor(dat$democracy=="Democracy", dat$impartial)
+table(dat$democracy, dat$impartial)
+```
+
+# Issues with OLS and Next Steps
+
+Motivates two recurring problems with OLS and our approach to prediction so far:
+
+1. **OLS is always trying to minimize predictive error, no matter what**: This means that coefficients and variances can sometimes get very very large, because this helps shrink error in some cases regardless of how "realistic" those predictions are.
+2. **Overfitting**: Similarly, OLS will fit the data to whatever columns we ask it to, whether or not there is any genuine ``strong" relationship. This overfitting is made worse by the fact that we have been training (fitting) and testing (evaluating) our model on the same data. Soon, that will change!
+
+**Illustration**: OLS coefficients / variances can blow up:
+
+```{r}
+#------------------------------------------------------
+# make 80 fake, random "noise" columns
+
+n <- nrow(dat)
+p <- 80
+
+dat_extra <- as.data.frame(
+  replicate(p, {
+    type <- sample(c("num", "str", "logical"), 1)
+    if (type == "num") rnorm(n)
+    else if (type == "str") sample(letters[1:5], n, TRUE)
+    else sample(c(TRUE, FALSE), n, TRUE)
+  }, simplify = FALSE)
+)
+
+names(dat_extra) <- paste0("var", 1:p)
+#------------------------------------------------------
+```
+
+```{r}
+dat_full <- bind_cols(dat, dat_extra)
+dat_full$country <- NULL
+
+fit_full <- lm(equal ~ ., data = dat_full)
+
+# texreg::screenreg(fit_full)
+```
+
+**Illustration**: overfitting!
+
+```{r}
+y <- dat_full$equal
+y_hat_full <- predict(fit_full, newdata = dat_full)
+y_hat <- predict(fit_lm, newdata = dat)
+
+mean((y - y_hat_full)^2)
+mean((y - y_hat)^2)
+```
